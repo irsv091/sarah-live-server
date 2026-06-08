@@ -65,7 +65,9 @@ function calcDurationSeconds(call) {
 }
 
 function isAnsweredCall(call) {
-  return calcDurationSeconds(call) >= 5;
+  const dur = calcDurationSeconds(call);
+  console.log("isAnsweredCall dur:", dur, "startedAt:", call?.startedAt, "endedAt:", call?.endedAt, "duration field:", call?.duration);
+  return dur >= 0; // accept all calls temporarily
 }
 
 // ── ACTIVE CALLS (Redis Hash) ─────────────────────────────────
