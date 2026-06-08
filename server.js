@@ -72,7 +72,7 @@ async function getActiveCalls() {
 // ── METRICS ───────────────────────────────────────────────────
 async function recordAnsweredCall(call) {
   const duration = Number(call?.duration ?? 0);
-  if (duration < 5) return;
+  if (duration < 1) return; // count all calls over 1 second
 
   const endedAt = call?.endedAt ? new Date(call.endedAt) : new Date();
   const keys = [
@@ -186,11 +186,20 @@ async function handleVapiWebhook(body) {
     }
     if (status === "ended") {
       await removeActiveCall(callId);
+      // Record here too in case end-of-call-report is not sent
+      await recordAnsweredCall(call);
     }
     await broadcastLiveUpdate();
   }
 
   if (msg.type === "end-of-call-report") {
+    await removeActiveCall(callId);
+    await recordAnsweredCall(call);
+    await broadcastLiveUpdate();
+  }
+
+  // Some VAPI plans send call-ended instead of end-of-call-report
+  if (msg.type === "call-ended") {
     await removeActiveCall(callId);
     await recordAnsweredCall(call);
     await broadcastLiveUpdate();
