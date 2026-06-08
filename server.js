@@ -5,10 +5,14 @@
  * - Tracks answered-call metrics in Redis (today/week/month/lifetime + averages)
  * - Pushes live updates to frontend via Socket.IO
  *
- * IMPORTANT:
- * - We ACK Vapi webhooks immediately (200 OK) and process async to avoid timeouts.
- * - Uses one Redis client for state/metrics. (If you scale Socket.IO to >1 instance,
- *   add socket.io-redis adapter separately.)
+ * SECURITY:
+ * - Set VAPI_WEBHOOK_SECRET in Railway env vars.
+ * - In Vapi dashboard, set your Server URL to:
+ *     https://your-railway-url.up.railway.app/vapi-webhook/YOUR_SECRET
+ * - This embeds the secret in the URL path since Vapi can't send arbitrary headers.
+ *
+ * SCALING:
+ * - For >1 Railway instance, uncomment the Socket.IO Redis adapter block below.
  */
 
 const express = require("express");
@@ -20,7 +24,8 @@ const { createClient } = require("redis");
 const PORT = process.env.PORT || 3000;
 const REDIS_URL = process.env.REDIS_URL;
 
-// Optional simple auth for webhook (recommended)
+// Secret embedded in webhook URL path (set this in Railway env vars)
+// Vapi Server URL should be: https://<your-domain>/vapi-webhook/<VAPI_WEBHOOK_SECRET>
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET;
 
 // ── APP / SOCKET.IO ───────────────────────────────────────────
@@ -29,6 +34,8 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
+  // In prod, replace "*" with your frontend URL:
+  // cors: { origin: process.env.FRONTEND_URL, methods: ["GET", "POST"] }
 });
 
 app.use(cors());
@@ -41,6 +48,18 @@ if (!REDIS_URL) {
 
 const redis = createClient({ url: REDIS_URL });
 redis.on("error", (err) => console.error("Redis error:", err));
+
+// ── SOCKET.IO REDIS ADAPTER (multi-instance scaling) ──────────
+// Uncomment this block if you scale to >1 Railway instance.
+// Also run: npm install @socket.io/redis-adapter
+//
+// const { createAdapter } = require("@socket.io/redis-adapter");
+// const pubClient = createClient({ url: REDIS_URL });
+// const subClient = pubClient.duplicate();
+// Promise.all([pubClient.connect(), subClient.connect()]).then(() => {
+//   io.adapter(createAdapter(pubClient, subClient));
+//   console.log("Socket.IO Redis adapter enabled");
+// });
 
 // ── HELPERS (UTC buckets) ─────────────────────────────────────
 function isoDate(d = new Date()) {
@@ -113,8 +132,7 @@ async function getMetricsSnapshot(now = new Date()) {
 
   const datas = rows.map((r) => (Array.isArray(r) ? r[1] : r) || {});
   const results = {};
-  const labels = Object.keys(keyMap);
-  labels.forEach((label, i) => {
+  Object.keys(keyMap).forEach((label, i) => {
     const d = datas[i] || {};
     const answered = parseInt(d.answered || "0", 10);
     const totalDuration = parseFloat(d.totalDuration || "0");
@@ -207,13 +225,25 @@ async function handleVapiWebhook(body) {
   }
 }
 
+// Route WITHOUT secret — only active if VAPI_WEBHOOK_SECRET is not set
+// Use this for testing only.
 app.post("/vapi-webhook", (req, res) => {
   if (WEBHOOK_SECRET) {
-    const provided = req.header("x-webhook-secret");
-    if (provided !== WEBHOOK_SECRET) return res.sendStatus(401);
+    // Secret is set but they used the unsecured route — reject
+    return res.sendStatus(403);
   }
   res.sendStatus(200);
-  handleVapiWebhook(req.body).catch((e) => console.error("Webhook processing error:", e));
+  handleVapiWebhook(req.body).catch((e) => console.error("Webhook error:", e));
+});
+
+// Route WITH secret in URL path — set your Vapi Server URL to:
+// https://<your-domain>/vapi-webhook/<VAPI_WEBHOOK_SECRET>
+app.post("/vapi-webhook/:secret", (req, res) => {
+  if (WEBHOOK_SECRET && req.params.secret !== WEBHOOK_SECRET) {
+    return res.sendStatus(401);
+  }
+  res.sendStatus(200);
+  handleVapiWebhook(req.body).catch((e) => console.error("Webhook error:", e));
 });
 
 // ── ROUTES ────────────────────────────────────────────────────
@@ -271,5 +301,9 @@ io.on("connection", async (socket) => {
 (async () => {
   await redis.connect();
   console.log("Redis connected");
-  server.listen(PORT, () => console.log(`Sarah Live Server running on port ${PORT}`));
-})();
+  if (WEBHOOK_SECRET) {
+    console.log(`Webhook secured at: /vapi-webhook/${WEBHOOK_SECRET.slice(0, 4)}****`);
+  } else {
+    console.warn("WARN: VAPI_WEBHOOK_SECRET not set — webhook is unsecured.");
+  }
+  server.listen(P
