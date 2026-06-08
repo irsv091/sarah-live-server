@@ -306,4 +306,6 @@ io.on("connection", async (socket) => {
   } else {
     console.warn("WARN: VAPI_WEBHOOK_SECRET not set — webhook is unsecured.");
   }
-  server.listen(P
+  server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
