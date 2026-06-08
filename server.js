@@ -71,13 +71,17 @@ async function getActiveCalls() {
 
 // ── METRICS ───────────────────────────────────────────────────
 async function recordAnsweredCall(call) {
+  // Try every possible field VAPI might use for duration
   const duration =
     Number(call?.duration ?? 0) ||
+    Number(call?.durationSeconds ?? 0) ||
+    Number(call?.durationMs ? call.durationMs / 1000 : 0) ||
     (call?.startedAt && call?.endedAt
       ? (new Date(call.endedAt) - new Date(call.startedAt)) / 1000
       : 0);
-  console.log("recordAnsweredCall duration:", duration, "startedAt:", call?.startedAt, "endedAt:", call?.endedAt);
-  if (duration < 1) return;
+  console.log("DURATION CALC:", duration, "| raw duration:", call?.duration, "| durationSeconds:", call?.durationSeconds, "| startedAt:", call?.startedAt, "| endedAt:", call?.endedAt);
+  // Record even if duration is 0 — don't filter out any calls
+  // if (duration < 1) return;
 
   const endedAt = call?.endedAt ? new Date(call.endedAt) : new Date();
   const keys = [
@@ -172,42 +176,52 @@ setInterval(async () => {
 
 // ── VAPI WEBHOOK HANDLER ──────────────────────────────────────
 async function handleVapiWebhook(body) {
-  // LOG EVERYTHING so we can see exactly what VAPI sends
-  console.log("VAPI RAW BODY:", JSON.stringify(body, null, 2));
   const msg = body?.message;
-  if (!msg) { console.log("VAPI: no message field found"); return; }
-  console.log("VAPI MSG TYPE:", msg.type, "| STATUS:", msg.status || "n/a", "| CALL ID:", body?.message?.call?.id || "n/a", "| DURATION:", body?.message?.call?.duration || "n/a");
-  const call   = msg.call;
-  if (!call?.id) return;
-  const callId = call.id;
+  if (!msg) return;
 
-  if (msg.type === "status-update") {
-    const status = msg.status;
+  const type   = msg.type;
+  const status = msg.status;
+
+  // Only process event types we care about — ignore everything else
+  const relevantTypes = ["status-update", "end-of-call-report", "call-ended"];
+  if (!relevantTypes.includes(type)) return;
+
+  // Extract only the fields we need from the call object
+  const raw    = msg.call || {};
+  const callId = raw.id;
+  if (!callId) return;
+
+  const call = {
+    id:           callId,
+    callerNumber: raw?.customer?.number || "Unknown",
+    startedAt:    raw.startedAt || null,
+    endedAt:      raw.endedAt   || null,
+    assistantId:  raw.assistantId || null,
+    // Try every duration field VAPI might send
+    duration:
+      Number(raw.duration ?? 0) ||
+      Number(raw.durationSeconds ?? 0) ||
+      Number(raw.durationMs ? raw.durationMs / 1000 : 0) ||
+      Number(msg.durationSeconds ?? 0) ||
+      (raw.startedAt && raw.endedAt
+        ? (new Date(raw.endedAt) - new Date(raw.startedAt)) / 1000
+        : 0),
+  };
+
+  console.log(`VAPI [${type}] callId=${callId} status=${status || "n/a"} duration=${call.duration}s caller=${call.callerNumber}`);
+
+  if (type === "status-update") {
     if (status === "ringing" || status === "in-progress") {
-      await setActiveCall(callId, {
-        id:           callId,
-        status,
-        callerNumber: call?.customer?.number || "Unknown",
-        startedAt:    call.startedAt || new Date().toISOString(),
-        assistantId:  call.assistantId,
-      });
+      await setActiveCall(callId, { ...call, status });
     }
     if (status === "ended") {
       await removeActiveCall(callId);
-      // Record here too in case end-of-call-report is not sent
       await recordAnsweredCall(call);
     }
     await broadcastLiveUpdate();
   }
 
-  if (msg.type === "end-of-call-report") {
-    await removeActiveCall(callId);
-    await recordAnsweredCall(call);
-    await broadcastLiveUpdate();
-  }
-
-  // Some VAPI plans send call-ended instead of end-of-call-report
-  if (msg.type === "call-ended") {
+  if (type === "end-of-call-report" || type === "call-ended") {
     await removeActiveCall(callId);
     await recordAnsweredCall(call);
     await broadcastLiveUpdate();
