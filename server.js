@@ -1,7 +1,7 @@
 /**
  * Sarah Live Dashboard — server.js
  * Railway + Redis + Socket.IO
- * Tracks VAPI calls only. No Make.com dependency.
+ * Tracks Vapi calls only. No Make.com dependency.
  */
 
 const express    = require("express");
@@ -26,14 +26,12 @@ app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
 // ── REDIS ─────────────────────────────────────────────────────
-if (!REDIS_URL) {
-  console.warn("WARN: REDIS_URL is not set. This service will not function correctly.");
-}
+if (!REDIS_URL) console.warn("WARN: REDIS_URL is not set.");
 
 const redis = createClient({ url: REDIS_URL });
 redis.on("error", (err) => console.error("Redis error:", err));
 
-// ── HELPERS ───────────────────────────────────────────────────
+// ── HELPERS (UTC buckets) ─────────────────────────────────────
 function isoDate(d = new Date()) {
   return d.toISOString().slice(0, 10);
 }
@@ -55,7 +53,22 @@ function safeJsonParse(str) {
   try { return JSON.parse(str); } catch { return null; }
 }
 
-// ── ACTIVE CALLS ──────────────────────────────────────────────
+function calcDurationSeconds(call) {
+  const dur =
+    Number(call?.duration ?? 0) ||
+    Number(call?.durationSeconds ?? 0) ||
+    (call?.durationMs ? Number(call.durationMs) / 1000 : 0) ||
+    (call?.startedAt && call?.endedAt
+      ? (new Date(call.endedAt) - new Date(call.startedAt)) / 1000
+      : 0);
+  return Number.isFinite(dur) ? Math.max(0, dur) : 0;
+}
+
+function isAnsweredCall(call) {
+  return calcDurationSeconds(call) >= 5;
+}
+
+// ── ACTIVE CALLS (Redis Hash) ─────────────────────────────────
 async function setActiveCall(callId, data) {
   await redis.hSet("activeCalls", callId, JSON.stringify(data));
 }
@@ -69,21 +82,13 @@ async function getActiveCalls() {
   return Object.values(all).map(safeJsonParse).filter(Boolean);
 }
 
-// ── METRICS ───────────────────────────────────────────────────
+// ── METRICS (Redis Hashes) ────────────────────────────────────
 async function recordAnsweredCall(call) {
-  // Try every possible field VAPI might use for duration
-  const duration =
-    Number(call?.duration ?? 0) ||
-    Number(call?.durationSeconds ?? 0) ||
-    Number(call?.durationMs ? call.durationMs / 1000 : 0) ||
-    (call?.startedAt && call?.endedAt
-      ? (new Date(call.endedAt) - new Date(call.startedAt)) / 1000
-      : 0);
-  console.log("DURATION CALC:", duration, "| raw duration:", call?.duration, "| durationSeconds:", call?.durationSeconds, "| startedAt:", call?.startedAt, "| endedAt:", call?.endedAt);
-  // Record even if duration is 0 — don't filter out any calls
-  // if (duration < 1) return;
+  if (!isAnsweredCall(call)) return;
 
-  const endedAt = call?.endedAt ? new Date(call.endedAt) : new Date();
+  const duration = calcDurationSeconds(call);
+  const endedAt  = call?.endedAt ? new Date(call.endedAt) : new Date();
+
   const keys = [
     "metrics:lifetime",
     `metrics:day:${isoDate(endedAt)}`,
@@ -113,6 +118,7 @@ async function getMetricsSnapshot(now = new Date()) {
 
   const datas = rows.map((r) => (Array.isArray(r) ? r[1] : r) || {});
   const results = {};
+
   Object.keys(keyMap).forEach((label, i) => {
     const d        = datas[i] || {};
     const answered = parseInt(d.answered || "0", 10);
@@ -156,6 +162,7 @@ setInterval(async () => {
     const cutoff = Date.now() - 2 * 60 * 60 * 1000;
     const multi  = redis.multi();
     let purged   = 0;
+
     for (const [id, val] of Object.entries(all)) {
       const call = safeJsonParse(val);
       if (!call?.startedAt) continue;
@@ -164,6 +171,7 @@ setInterval(async () => {
         purged += 1;
       }
     }
+
     if (purged > 0) {
       await multi.exec();
       console.log(`Purged stale calls: ${purged}`);
@@ -179,65 +187,54 @@ async function handleVapiWebhook(body) {
   const msg = body?.message;
   if (!msg) return;
 
-  const type   = msg.type;
-  const status = msg.status;
+  // Only process event types we care about
+  if (msg.type !== "status-update" && msg.type !== "end-of-call-report") return;
 
-  // Only process event types we care about — ignore everything else
-  const relevantTypes = ["status-update", "end-of-call-report", "call-ended"];
-  if (!relevantTypes.includes(type)) return;
-
-  // Extract only the fields we need from the call object
   const raw    = msg.call || {};
   const callId = raw.id;
   if (!callId) return;
 
+  // Extract only the fields we need
   const call = {
     id:           callId,
+    assistantId:  raw.assistantId  || null,
     callerNumber: raw?.customer?.number || "Unknown",
-    startedAt:    raw.startedAt || null,
-    endedAt:      raw.endedAt   || null,
-    assistantId:  raw.assistantId || null,
-    // Try every duration field VAPI might send
-    duration:
-      Number(raw.duration ?? 0) ||
-      Number(raw.durationSeconds ?? 0) ||
-      Number(raw.durationMs ? raw.durationMs / 1000 : 0) ||
-      Number(msg.durationSeconds ?? 0) ||
-      (raw.startedAt && raw.endedAt
-        ? (new Date(raw.endedAt) - new Date(raw.startedAt)) / 1000
-        : 0),
+    startedAt:    raw.startedAt    || null,
+    endedAt:      raw.endedAt      || null,
+    endedReason:  raw.endedReason  || null,
+    duration:     calcDurationSeconds(raw),
   };
 
-  console.log(`VAPI [${type}] callId=${callId} status=${status || "n/a"} duration=${call.duration}s caller=${call.callerNumber}`);
+  console.log(`VAPI [${msg.type}] callId=${callId} status=${msg.status || "n/a"} dur=${call.duration}s`);
 
-  if (type === "status-update") {
+  if (msg.type === "status-update") {
+    const status = msg.status;
+
     if (status === "ringing" || status === "in-progress") {
-      await setActiveCall(callId, { ...call, status });
+      await setActiveCall(callId, { ...call, status, startedAt: call.startedAt || new Date().toISOString() });
+      await broadcastLiveUpdate();
     }
+
     if (status === "ended") {
       await removeActiveCall(callId);
-      await recordAnsweredCall(call);
+      await broadcastLiveUpdate();
     }
-    await broadcastLiveUpdate();
   }
 
-  if (type === "end-of-call-report" || type === "call-ended") {
+  if (msg.type === "end-of-call-report") {
     await removeActiveCall(callId);
-    await recordAnsweredCall(call);
+    await recordAnsweredCall(call); // ✅ use clean extracted call object
     await broadcastLiveUpdate();
   }
 }
 
 // ── WEBHOOK ROUTES ────────────────────────────────────────────
-// Unsecured (only works if VAPI_WEBHOOK_SECRET is not set)
 app.post("/vapi-webhook", (req, res) => {
   if (WEBHOOK_SECRET) return res.sendStatus(403);
   res.sendStatus(200);
   handleVapiWebhook(req.body).catch((e) => console.error("Webhook error:", e));
 });
 
-// Secured — set Vapi Server URL to:
-// https://<your-domain>/vapi-webhook/<VAPI_WEBHOOK_SECRET>
 app.post("/vapi-webhook/:secret", (req, res) => {
   if (WEBHOOK_SECRET && req.params.secret !== WEBHOOK_SECRET) {
     return res.sendStatus(401);
@@ -269,12 +266,6 @@ app.get("/metrics", async (req, res) => {
   res.json(await getMetricsSnapshot());
 });
 
-app.get("/debug/metrics-keys", async (req, res) => {
-  const keys = await redis.keys("metrics:*");
-  const activeCalls = await redis.hGetAll("activeCalls");
-  res.json({ keys, activeCallCount: Object.keys(activeCalls).length });
-});
-
 app.get("/stats", async (req, res) => {
   const snap  = await getMetricsSnapshot();
   const range = req.query.range || "today";
@@ -285,6 +276,12 @@ app.get("/stats", async (req, res) => {
     lifetime: { total: snap.callsAnswered.lifetime,  avgDuration: snap.avgCallDurationSeconds.lifetime },
   };
   res.json(map[range] || map.today);
+});
+
+app.get("/debug/metrics-keys", async (req, res) => {
+  const keys        = await redis.keys("metrics:*");
+  const activeCalls = await redis.hGetAll("activeCalls");
+  res.json({ keys, activeCallCount: Object.keys(activeCalls).length });
 });
 
 // ── SOCKET.IO ─────────────────────────────────────────────────
@@ -304,11 +301,11 @@ io.on("connection", async (socket) => {
   await redis.connect();
   console.log("Redis connected");
   if (WEBHOOK_SECRET) {
-    console.log(`Webhook secured at: /vapi-webhook/${WEBHOOK_SECRET.slice(0, 4)}****`);
+    console.log(`Secured webhook: /vapi-webhook/${WEBHOOK_SECRET.slice(0, 4)}****`);
   } else {
     console.warn("WARN: VAPI_WEBHOOK_SECRET not set — webhook is unsecured.");
   }
   server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Sarah Live Server running on port ${PORT}`);
   });
 })();
