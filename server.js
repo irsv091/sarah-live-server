@@ -71,8 +71,13 @@ async function getActiveCalls() {
 
 // ── METRICS ───────────────────────────────────────────────────
 async function recordAnsweredCall(call) {
-  const duration = Number(call?.duration ?? 0);
-  if (duration < 1) return; // count all calls over 1 second
+  const duration =
+    Number(call?.duration ?? 0) ||
+    (call?.startedAt && call?.endedAt
+      ? (new Date(call.endedAt) - new Date(call.startedAt)) / 1000
+      : 0);
+  console.log("recordAnsweredCall duration:", duration, "startedAt:", call?.startedAt, "endedAt:", call?.endedAt);
+  if (duration < 1) return;
 
   const endedAt = call?.endedAt ? new Date(call.endedAt) : new Date();
   const keys = [
@@ -167,8 +172,11 @@ setInterval(async () => {
 
 // ── VAPI WEBHOOK HANDLER ──────────────────────────────────────
 async function handleVapiWebhook(body) {
+  // LOG EVERYTHING so we can see exactly what VAPI sends
+  console.log("VAPI RAW BODY:", JSON.stringify(body, null, 2));
   const msg = body?.message;
-  if (!msg) return;
+  if (!msg) { console.log("VAPI: no message field found"); return; }
+  console.log("VAPI MSG TYPE:", msg.type, "| STATUS:", msg.status || "n/a", "| CALL ID:", body?.message?.call?.id || "n/a", "| DURATION:", body?.message?.call?.duration || "n/a");
   const call   = msg.call;
   if (!call?.id) return;
   const callId = call.id;
@@ -245,6 +253,12 @@ app.get("/state", async (req, res) => {
 
 app.get("/metrics", async (req, res) => {
   res.json(await getMetricsSnapshot());
+});
+
+app.get("/debug/metrics-keys", async (req, res) => {
+  const keys = await redis.keys("metrics:*");
+  const activeCalls = await redis.hGetAll("activeCalls");
+  res.json({ keys, activeCallCount: Object.keys(activeCalls).length });
 });
 
 app.get("/stats", async (req, res) => {
