@@ -1,41 +1,25 @@
 /**
- * Sarah Live Dashboard (Railway + Redis + Socket.IO)
- * - Receives Vapi webhooks at POST /vapi-webhook
- * - Tracks active calls in Redis
- * - Tracks answered-call metrics in Redis (today/week/month/lifetime + averages)
- * - Pushes live updates to frontend via Socket.IO
- *
- * SECURITY:
- * - Set VAPI_WEBHOOK_SECRET in Railway env vars.
- * - In Vapi dashboard, set your Server URL to:
- *     https://your-railway-url.up.railway.app/vapi-webhook/YOUR_SECRET
- * - This embeds the secret in the URL path since Vapi can't send arbitrary headers.
- *
- * SCALING:
- * - For >1 Railway instance, uncomment the Socket.IO Redis adapter block below.
+ * Sarah Live Dashboard — server.js
+ * Railway + Redis + Socket.IO
+ * Tracks VAPI calls only. No Make.com dependency.
  */
 
-const express = require("express");
-const http = require("http");
+const express    = require("express");
+const http       = require("http");
 const { Server } = require("socket.io");
-const cors = require("cors");
+const cors       = require("cors");
 const { createClient } = require("redis");
 
-const PORT = process.env.PORT || 3000;
-const REDIS_URL = process.env.REDIS_URL;
-
-// Secret embedded in webhook URL path (set this in Railway env vars)
-// Vapi Server URL should be: https://<your-domain>/vapi-webhook/<VAPI_WEBHOOK_SECRET>
+const PORT           = process.env.PORT || 3000;
+const REDIS_URL      = process.env.REDIS_URL;
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET;
 
 // ── APP / SOCKET.IO ───────────────────────────────────────────
-const app = express();
+const app    = express();
 const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
-  // In prod, replace "*" with your frontend URL:
-  // cors: { origin: process.env.FRONTEND_URL, methods: ["GET", "POST"] }
 });
 
 app.use(cors());
@@ -49,29 +33,17 @@ if (!REDIS_URL) {
 const redis = createClient({ url: REDIS_URL });
 redis.on("error", (err) => console.error("Redis error:", err));
 
-// ── SOCKET.IO REDIS ADAPTER (multi-instance scaling) ──────────
-// Uncomment this block if you scale to >1 Railway instance.
-// Also run: npm install @socket.io/redis-adapter
-//
-// const { createAdapter } = require("@socket.io/redis-adapter");
-// const pubClient = createClient({ url: REDIS_URL });
-// const subClient = pubClient.duplicate();
-// Promise.all([pubClient.connect(), subClient.connect()]).then(() => {
-//   io.adapter(createAdapter(pubClient, subClient));
-//   console.log("Socket.IO Redis adapter enabled");
-// });
-
-// ── HELPERS (UTC buckets) ─────────────────────────────────────
+// ── HELPERS ───────────────────────────────────────────────────
 function isoDate(d = new Date()) {
   return d.toISOString().slice(0, 10);
 }
 
 function isoWeekKey(d = new Date()) {
-  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const date   = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   const dayNum = date.getUTCDay() || 7;
   date.setUTCDate(date.getUTCDate() + 4 - dayNum);
   const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-  const weekNo = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+  const weekNo    = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
   return `${date.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
 }
 
@@ -83,7 +55,7 @@ function safeJsonParse(str) {
   try { return JSON.parse(str); } catch { return null; }
 }
 
-// ── ACTIVE CALLS (Redis Hash) ─────────────────────────────────
+// ── ACTIVE CALLS ──────────────────────────────────────────────
 async function setActiveCall(callId, data) {
   await redis.hSet("activeCalls", callId, JSON.stringify(data));
 }
@@ -97,7 +69,7 @@ async function getActiveCalls() {
   return Object.values(all).map(safeJsonParse).filter(Boolean);
 }
 
-// ── METRICS (Redis Hashes) ────────────────────────────────────
+// ── METRICS ───────────────────────────────────────────────────
 async function recordAnsweredCall(call) {
   const duration = Number(call?.duration ?? 0);
   if (duration < 5) return;
@@ -133,12 +105,12 @@ async function getMetricsSnapshot(now = new Date()) {
   const datas = rows.map((r) => (Array.isArray(r) ? r[1] : r) || {});
   const results = {};
   Object.keys(keyMap).forEach((label, i) => {
-    const d = datas[i] || {};
+    const d        = datas[i] || {};
     const answered = parseInt(d.answered || "0", 10);
-    const totalDuration = parseFloat(d.totalDuration || "0");
+    const total    = parseFloat(d.totalDuration || "0");
     results[label] = {
       answered,
-      avgDuration: answered > 0 ? totalDuration / answered : 0,
+      avgDuration: answered > 0 ? total / answered : 0,
     };
   });
 
@@ -163,18 +135,18 @@ async function broadcastLiveUpdate() {
   const activeCalls = await getActiveCalls();
   io.emit("live-update", {
     activeCalls,
-    liveCount: activeCalls.length,
-    timestamp: new Date().toISOString(),
+    liveCount:  activeCalls.length,
+    timestamp:  new Date().toISOString(),
   });
 }
 
-// ── PURGE STALE ACTIVE CALLS (every 10 min) ───────────────────
+// ── PURGE STALE CALLS (every 10 min) ──────────────────────────
 setInterval(async () => {
   try {
-    const all = await redis.hGetAll("activeCalls");
+    const all    = await redis.hGetAll("activeCalls");
     const cutoff = Date.now() - 2 * 60 * 60 * 1000;
-    const multi = redis.multi();
-    let purged = 0;
+    const multi  = redis.multi();
+    let purged   = 0;
     for (const [id, val] of Object.entries(all)) {
       const call = safeJsonParse(val);
       if (!call?.startedAt) continue;
@@ -193,11 +165,11 @@ setInterval(async () => {
   }
 }, 10 * 60 * 1000);
 
-// ── VAPI WEBHOOK HANDLER (ACK FIRST) ─────────────────────────
+// ── VAPI WEBHOOK HANDLER ──────────────────────────────────────
 async function handleVapiWebhook(body) {
   const msg = body?.message;
   if (!msg) return;
-  const call = msg.call;
+  const call   = msg.call;
   if (!call?.id) return;
   const callId = call.id;
 
@@ -205,11 +177,11 @@ async function handleVapiWebhook(body) {
     const status = msg.status;
     if (status === "ringing" || status === "in-progress") {
       await setActiveCall(callId, {
-        id: callId,
+        id:           callId,
         status,
         callerNumber: call?.customer?.number || "Unknown",
-        startedAt: call.startedAt || new Date().toISOString(),
-        assistantId: call.assistantId,
+        startedAt:    call.startedAt || new Date().toISOString(),
+        assistantId:  call.assistantId,
       });
     }
     if (status === "ended") {
@@ -225,18 +197,15 @@ async function handleVapiWebhook(body) {
   }
 }
 
-// Route WITHOUT secret — only active if VAPI_WEBHOOK_SECRET is not set
-// Use this for testing only.
+// ── WEBHOOK ROUTES ────────────────────────────────────────────
+// Unsecured (only works if VAPI_WEBHOOK_SECRET is not set)
 app.post("/vapi-webhook", (req, res) => {
-  if (WEBHOOK_SECRET) {
-    // Secret is set but they used the unsecured route — reject
-    return res.sendStatus(403);
-  }
+  if (WEBHOOK_SECRET) return res.sendStatus(403);
   res.sendStatus(200);
   handleVapiWebhook(req.body).catch((e) => console.error("Webhook error:", e));
 });
 
-// Route WITH secret in URL path — set your Vapi Server URL to:
+// Secured — set Vapi Server URL to:
 // https://<your-domain>/vapi-webhook/<VAPI_WEBHOOK_SECRET>
 app.post("/vapi-webhook/:secret", (req, res) => {
   if (WEBHOOK_SECRET && req.params.secret !== WEBHOOK_SECRET) {
@@ -246,13 +215,9 @@ app.post("/vapi-webhook/:secret", (req, res) => {
   handleVapiWebhook(req.body).catch((e) => console.error("Webhook error:", e));
 });
 
-// ── ROUTES ────────────────────────────────────────────────────
-app.get("/", async (req, res) => {
-  res.json({
-    status: "ok",
-    service: "Sarah Live Dashboard",
-    uptime: `${Math.floor(process.uptime())}s`,
-  });
+// ── REST ROUTES ───────────────────────────────────────────────
+app.get("/", (req, res) => {
+  res.json({ status: "ok", service: "Sarah Live Dashboard", uptime: `${Math.floor(process.uptime())}s` });
 });
 
 app.get("/health", async (req, res) => {
@@ -276,13 +241,13 @@ app.get("/metrics", async (req, res) => {
 app.get("/stats", async (req, res) => {
   const snap  = await getMetricsSnapshot();
   const range = req.query.range || "today";
-  const map = {
+  const map   = {
     today:    { total: snap.callsAnswered.today,     avgDuration: snap.avgCallDurationSeconds.today },
     week:     { total: snap.callsAnswered.thisWeek,  avgDuration: snap.avgCallDurationSeconds.thisWeek },
     month:    { total: snap.callsAnswered.thisMonth, avgDuration: snap.avgCallDurationSeconds.thisMonth },
     lifetime: { total: snap.callsAnswered.lifetime,  avgDuration: snap.avgCallDurationSeconds.lifetime },
   };
-  res.json({ range, ...(map[range] || map.today), all: map, timestamp: new Date().toISOString() });
+  res.json(map[range] || map.today);
 });
 
 // ── SOCKET.IO ─────────────────────────────────────────────────
@@ -291,8 +256,8 @@ io.on("connection", async (socket) => {
   const activeCalls = await getActiveCalls();
   socket.emit("live-update", {
     activeCalls,
-    liveCount: activeCalls.length,
-    timestamp: new Date().toISOString(),
+    liveCount:  activeCalls.length,
+    timestamp:  new Date().toISOString(),
   });
   socket.on("disconnect", () => console.log("Dashboard disconnected:", socket.id));
 });
