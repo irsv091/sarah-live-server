@@ -246,6 +246,43 @@ app.get("/debug/metrics-keys", async (req, res) => {
   res.json({ keys, activeCallCount: Object.keys(activeCalls).length });
 });
 
+// ── GOOGLE REVIEWS ────────────────────────────────────────────
+app.get("/google", async (req, res) => {
+  const PLACES_KEY  = process.env.GOOGLE_PLACES_KEY;
+  const PLACE_ID    = process.env.GOOGLE_PLACE_ID;
+  const GHL_TOKEN   = process.env.GHL_TOKEN;
+  const GHL_LOC     = process.env.GHL_LOCATION;
+  const WORKFLOW_ID = process.env.GHL_REVIEW_WORKFLOW;
+
+  try {
+    // Fetch Google Places rating + review count
+    const placesRes = await fetch(
+      `https://maps.googleapis.com/maps/api/place/details/json?place_id=${PLACE_ID}&fields=rating,user_ratings_total&key=${PLACES_KEY}`
+    );
+    const placesData = await placesRes.json();
+    const rating      = placesData.result?.rating ?? null;
+    const totalReviews = placesData.result?.user_ratings_total ?? null;
+
+    // Fetch GHL workflow enrollment count
+    const workflowRes = await fetch(
+      `https://services.leadconnectorhq.com/workflows/${WORKFLOW_ID}?locationId=${GHL_LOC}`,
+      { headers: { Authorization: `Bearer ${GHL_TOKEN}`, Version: "2021-07-28" } }
+    );
+    const workflowData = await workflowRes.json();
+    const requestsSent  = workflowData?.workflow?.contactsEnrolledCount ?? null;
+
+    // Calculate conversion rate
+    const conversion = requestsSent && totalReviews
+      ? Math.min(100, Math.round((totalReviews / requestsSent) * 100))
+      : null;
+
+    res.json({ rating, totalReviews, requestsSent, conversion });
+  } catch(e) {
+    console.error("Google endpoint error:", e);
+    res.status(500).json({ error: "Failed to fetch review data" });
+  }
+});
+
 io.on("connection", async (socket) => {
   console.log("Dashboard connected:", socket.id);
   const activeCalls = await getActiveCalls();
