@@ -3,7 +3,6 @@
  * Railway + Redis + Socket.IO
  * Tracks Vapi calls only. No Make.com dependency.
  */
-
 const express    = require("express");
 const http       = require("http");
 const { Server } = require("socket.io");
@@ -14,10 +13,8 @@ const PORT           = process.env.PORT || 3000;
 const REDIS_URL      = process.env.REDIS_URL;
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET;
 
-// ── APP / SOCKET.IO ───────────────────────────────────────────
 const app    = express();
 const server = http.createServer(app);
-
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
 });
@@ -25,17 +22,13 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
-// ── REDIS ─────────────────────────────────────────────────────
 if (!REDIS_URL) console.warn("WARN: REDIS_URL is not set.");
-
 const redis = createClient({ url: REDIS_URL });
 redis.on("error", (err) => console.error("Redis error:", err));
 
-// ── HELPERS (UTC buckets) ─────────────────────────────────────
 function isoDate(d = new Date()) {
   return d.toISOString().slice(0, 10);
 }
-
 function isoWeekKey(d = new Date()) {
   const date   = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   const dayNum = date.getUTCDay() || 7;
@@ -44,15 +37,12 @@ function isoWeekKey(d = new Date()) {
   const weekNo    = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
   return `${date.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
 }
-
 function isoMonthKey(d = new Date()) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
-
 function safeJsonParse(str) {
   try { return JSON.parse(str); } catch { return null; }
 }
-
 function calcDurationSeconds(call) {
   const dur =
     Number(call?.duration ?? 0) ||
@@ -63,41 +53,32 @@ function calcDurationSeconds(call) {
       : 0);
   return Number.isFinite(dur) ? Math.max(0, dur) : 0;
 }
-
 function isAnsweredCall(call) {
   const dur = calcDurationSeconds(call);
-  console.log("isAnsweredCall dur:", dur, "startedAt:", call?.startedAt, "endedAt:", call?.endedAt, "duration field:", call?.duration);
-  return dur >= 0; // accept all calls temporarily
+  return dur >= 0;
 }
 
-// ── ACTIVE CALLS (Redis Hash) ─────────────────────────────────
 async function setActiveCall(callId, data) {
   await redis.hSet("activeCalls", callId, JSON.stringify(data));
 }
-
 async function removeActiveCall(callId) {
   await redis.hDel("activeCalls", callId);
 }
-
 async function getActiveCalls() {
   const all = await redis.hGetAll("activeCalls");
   return Object.values(all).map(safeJsonParse).filter(Boolean);
 }
 
-// ── METRICS (Redis Hashes) ────────────────────────────────────
 async function recordAnsweredCall(call) {
   if (!isAnsweredCall(call)) return;
-
   const duration = calcDurationSeconds(call);
   const endedAt  = call?.endedAt ? new Date(call.endedAt) : new Date();
-
   const keys = [
     "metrics:lifetime",
     `metrics:day:${isoDate(endedAt)}`,
     `metrics:week:${isoWeekKey(endedAt)}`,
     `metrics:month:${isoMonthKey(endedAt)}`,
   ];
-
   const multi = redis.multi();
   for (const key of keys) {
     multi.hIncrBy(key, "answered", 1);
@@ -113,14 +94,11 @@ async function getMetricsSnapshot(now = new Date()) {
     thisMonth: `metrics:month:${isoMonthKey(now)}`,
     lifetime:  "metrics:lifetime",
   };
-
   const multi = redis.multi();
   for (const key of Object.values(keyMap)) multi.hGetAll(key);
-  const rows = await multi.exec();
-
+  const rows  = await multi.exec();
   const datas = rows.map((r) => (Array.isArray(r) ? r[1] : r) || {});
   const results = {};
-
   Object.keys(keyMap).forEach((label, i) => {
     const d        = datas[i] || {};
     const answered = parseInt(d.answered || "0", 10);
@@ -130,7 +108,6 @@ async function getMetricsSnapshot(now = new Date()) {
       avgDuration: answered > 0 ? total / answered : 0,
     };
   });
-
   return {
     callsAnswered: {
       today:     results.today.answered,
@@ -147,7 +124,6 @@ async function getMetricsSnapshot(now = new Date()) {
   };
 }
 
-// ── BROADCAST ─────────────────────────────────────────────────
 async function broadcastLiveUpdate() {
   const activeCalls = await getActiveCalls();
   io.emit("live-update", {
@@ -157,14 +133,12 @@ async function broadcastLiveUpdate() {
   });
 }
 
-// ── PURGE STALE CALLS (every 10 min) ──────────────────────────
 setInterval(async () => {
   try {
     const all    = await redis.hGetAll("activeCalls");
     const cutoff = Date.now() - 2 * 60 * 60 * 1000;
     const multi  = redis.multi();
     let purged   = 0;
-
     for (const [id, val] of Object.entries(all)) {
       const call = safeJsonParse(val);
       if (!call?.startedAt) continue;
@@ -173,7 +147,6 @@ setInterval(async () => {
         purged += 1;
       }
     }
-
     if (purged > 0) {
       await multi.exec();
       console.log(`Purged stale calls: ${purged}`);
@@ -184,19 +157,13 @@ setInterval(async () => {
   }
 }, 10 * 60 * 1000);
 
-// ── VAPI WEBHOOK HANDLER ──────────────────────────────────────
 async function handleVapiWebhook(body) {
   const msg = body?.message;
   if (!msg) return;
-
-  // Only process event types we care about
   if (msg.type !== "status-update" && msg.type !== "end-of-call-report") return;
-
   const raw    = msg.call || {};
   const callId = raw.id;
   if (!callId) return;
-
-  // Extract only the fields we need
   const call = {
     id:           callId,
     assistantId:  raw.assistantId  || null,
@@ -206,31 +173,25 @@ async function handleVapiWebhook(body) {
     endedReason:  raw.endedReason  || null,
     duration:     calcDurationSeconds(raw),
   };
-
   console.log(`VAPI [${msg.type}] callId=${callId} status=${msg.status || "n/a"} dur=${call.duration}s`);
-
   if (msg.type === "status-update") {
     const status = msg.status;
-
     if (status === "ringing" || status === "in-progress") {
       await setActiveCall(callId, { ...call, status, startedAt: call.startedAt || new Date().toISOString() });
       await broadcastLiveUpdate();
     }
-
     if (status === "ended") {
       await removeActiveCall(callId);
       await broadcastLiveUpdate();
     }
   }
-
   if (msg.type === "end-of-call-report") {
     await removeActiveCall(callId);
-    await recordAnsweredCall(call); // ✅ use clean extracted call object
+    await recordAnsweredCall(call);
     await broadcastLiveUpdate();
   }
 }
 
-// ── WEBHOOK ROUTES ────────────────────────────────────────────
 app.post("/vapi-webhook", (req, res) => {
   if (WEBHOOK_SECRET) return res.sendStatus(403);
   res.sendStatus(200);
@@ -245,7 +206,6 @@ app.post("/vapi-webhook/:secret", (req, res) => {
   handleVapiWebhook(req.body).catch((e) => console.error("Webhook error:", e));
 });
 
-// ── REST ROUTES ───────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.json({ status: "ok", service: "Sarah Live Dashboard", uptime: `${Math.floor(process.uptime())}s` });
 });
@@ -286,7 +246,6 @@ app.get("/debug/metrics-keys", async (req, res) => {
   res.json({ keys, activeCallCount: Object.keys(activeCalls).length });
 });
 
-// ── SOCKET.IO ─────────────────────────────────────────────────
 io.on("connection", async (socket) => {
   console.log("Dashboard connected:", socket.id);
   const activeCalls = await getActiveCalls();
@@ -298,7 +257,6 @@ io.on("connection", async (socket) => {
   socket.on("disconnect", () => console.log("Dashboard disconnected:", socket.id));
 });
 
-// ── STARTUP ───────────────────────────────────────────────────
 (async () => {
   await redis.connect();
   console.log("Redis connected");
