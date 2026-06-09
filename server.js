@@ -256,20 +256,23 @@ app.get("/google", async (req, res) => {
 
   try {
     // Fetch Google Places rating + review count
-    const placesRes = await fetch(
-      `https://maps.googleapis.com/maps/api/place/details/json?place_id=${PLACE_ID}&fields=rating,user_ratings_total&key=${PLACES_KEY}`
-    );
+    const placesUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${PLACE_ID}&fields=rating,user_ratings_total&key=${PLACES_KEY}`;
+    console.log("Places URL:", placesUrl);
+    const placesRes = await fetch(placesUrl);
     const placesData = await placesRes.json();
-    const rating      = placesData.result?.rating ?? null;
+    console.log("Places response:", JSON.stringify(placesData));
+    const rating       = placesData.result?.rating ?? null;
     const totalReviews = placesData.result?.user_ratings_total ?? null;
 
     // Fetch GHL workflow enrollment count
-    const workflowRes = await fetch(
-      `https://services.leadconnectorhq.com/workflows/${WORKFLOW_ID}?locationId=${GHL_LOC}`,
-      { headers: { Authorization: `Bearer ${GHL_TOKEN}`, Version: "2021-07-28" } }
-    );
+    const workflowUrl = `https://services.leadconnectorhq.com/workflows/${WORKFLOW_ID}?locationId=${GHL_LOC}`;
+    console.log("Workflow URL:", workflowUrl);
+    const workflowRes = await fetch(workflowUrl, {
+      headers: { Authorization: `Bearer ${GHL_TOKEN}`, Version: "2021-07-28" }
+    });
     const workflowData = await workflowRes.json();
-    const requestsSent  = workflowData?.workflow?.contactsEnrolledCount ?? null;
+    console.log("Workflow response:", JSON.stringify(workflowData));
+    const requestsSent = workflowData?.workflow?.contactsEnrolledCount ?? null;
 
     // Calculate conversion rate
     const conversion = requestsSent && totalReviews
