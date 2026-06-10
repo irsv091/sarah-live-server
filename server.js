@@ -270,15 +270,16 @@ app.get("/google", async (req, res) => {
     const rating       = placesData.rating ?? null;
     const totalReviews = placesData.userRatingCount ?? null;
 
-    // Count contacts enrolled in review workflow via contacts search
-    const contactsUrl = `https://services.leadconnectorhq.com/contacts/?locationId=${GHL_LOC}&query=&workflowId=${WORKFLOW_ID}&limit=1`;
-    console.log("Contacts URL:", contactsUrl);
-    const contactsRes = await fetch(contactsUrl, {
+    // Fetch custom value — review_requests_sent by ID
+    const cvUrl = `https://services.leadconnectorhq.com/locations/${GHL_LOC}/customValues/da9c119d-63e5-4fc6-b5b1-253b99c8989d`;
+    console.log("Custom Value URL:", cvUrl);
+    const cvRes = await fetch(cvUrl, {
       headers: { Authorization: `Bearer ${GHL_TOKEN}`, Version: "2021-07-28" }
     });
-    const contactsData = await contactsRes.json();
-    console.log("Contacts response:", JSON.stringify(contactsData).slice(0, 300));
-    const requestsSent = contactsData?.meta?.total ?? null;
+    const cvData = await cvRes.json();
+    console.log("Custom Value response:", JSON.stringify(cvData));
+    const requestsSent = cvData?.customValue?.value ? parseInt(cvData.customValue.value) : 0;
+    console.log("Review requests sent:", requestsSent);
 
     // Calculate conversion rate
     const conversion = requestsSent && totalReviews
