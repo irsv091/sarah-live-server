@@ -271,7 +271,7 @@ app.get("/google", async (req, res) => {
     const totalReviews = placesData.userRatingCount ?? null;
 
     // Fetch custom value — review_requests_sent by ID
-    const cvUrl = `https://services.leadconnectorhq.com/locations/${GHL_LOC}/customValues/da9c119d-63e5-4fc6-b5b1-253b99c8989d`;
+    const cvUrl = `https://services.leadconnectorhq.com/locations/${GHL_LOC}/customValues/X9aqFfOCEPonwh4JZZbp`;
     console.log("Custom Value URL:", cvUrl);
     const cvRes = await fetch(cvUrl, {
       headers: { Authorization: `Bearer ${GHL_TOKEN}`, Version: "2021-07-28" }
