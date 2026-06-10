@@ -256,7 +256,7 @@ app.get("/google", async (req, res) => {
 
   try {
     // Fetch Google Places rating + review count (New Places API)
-    const placesUrl = `https://places.googleapis.com/v1/places/ChIJCTEpLmsNI9STEBM`;
+    const placesUrl = `https://places.googleapis.com/v1/places/ChIJS9Ya_BgnWksRXbUpBibrv5k`;
     console.log("Places URL:", placesUrl);
     const placesRes = await fetch(placesUrl, {
       headers: {
