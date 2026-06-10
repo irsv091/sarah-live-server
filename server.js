@@ -12,6 +12,7 @@ const { createClient } = require("redis");
 const PORT           = process.env.PORT || 3000;
 const REDIS_URL      = process.env.REDIS_URL;
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET;
+const MAKE_WEBHOOK_URL = "https://hook.us2.make.com/gdtf1f3xj436hfldr658xtw6hv405pxt";
 
 const app    = express();
 const server = http.createServer(app);
@@ -157,6 +158,19 @@ setInterval(async () => {
   }
 }, 10 * 60 * 1000);
 
+async function forwardToMake(body) {
+  try {
+    await fetch(MAKE_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    console.log("Forwarded to Make.com ✅");
+  } catch (err) {
+    console.error("Make.com forward failed:", err);
+  }
+}
+
 async function handleVapiWebhook(body) {
   const msg = body?.message;
   if (!msg) return;
@@ -189,6 +203,7 @@ async function handleVapiWebhook(body) {
     await removeActiveCall(callId);
     await recordAnsweredCall(call);
     await broadcastLiveUpdate();
+    await forwardToMake(body);
   }
 }
 
@@ -255,7 +270,6 @@ app.get("/google", async (req, res) => {
   const WORKFLOW_ID = process.env.GHL_REVIEW_WORKFLOW;
 
   try {
-    // Fetch Google Places rating + review count (New Places API)
     const placesUrl = `https://places.googleapis.com/v1/places/ChIJS9Ya_BgnWksRXbUpBibrv5k`;
     console.log("Places URL:", placesUrl);
     const placesRes = await fetch(placesUrl, {
@@ -270,7 +284,6 @@ app.get("/google", async (req, res) => {
     const rating       = placesData.rating ?? null;
     const totalReviews = placesData.userRatingCount ?? null;
 
-    // Fetch custom value — review_requests_sent by ID
     const cvUrl = `https://services.leadconnectorhq.com/locations/${GHL_LOC}/customValues/X9aqFfOCEPonwh4JZZbp`;
     console.log("Custom Value URL:", cvUrl);
     const cvRes = await fetch(cvUrl, {
@@ -281,7 +294,6 @@ app.get("/google", async (req, res) => {
     const requestsSent = cvData?.customValue?.value ? parseInt(cvData.customValue.value) : 0;
     console.log("Review requests sent:", requestsSent);
 
-    // Calculate conversion rate
     const conversion = requestsSent && totalReviews
       ? Math.min(100, Math.round((totalReviews / requestsSent) * 100))
       : null;
@@ -293,6 +305,7 @@ app.get("/google", async (req, res) => {
   }
 });
 
+// ── SOCKET.IO ─────────────────────────────────────────────────
 io.on("connection", async (socket) => {
   console.log("Dashboard connected:", socket.id);
   const activeCalls = await getActiveCalls();
@@ -304,6 +317,7 @@ io.on("connection", async (socket) => {
   socket.on("disconnect", () => console.log("Dashboard disconnected:", socket.id));
 });
 
+// ── STARTUP ───────────────────────────────────────────────────
 (async () => {
   await redis.connect();
   console.log("Redis connected");
