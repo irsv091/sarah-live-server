@@ -255,24 +255,30 @@ app.get("/google", async (req, res) => {
   const WORKFLOW_ID = process.env.GHL_REVIEW_WORKFLOW;
 
   try {
-    // Fetch Google Places rating + review count
-    const placesUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${PLACE_ID}&fields=rating,user_ratings_total&key=${PLACES_KEY}`;
+    // Fetch Google Places rating + review count (New Places API)
+    const placesUrl = `https://places.googleapis.com/v1/places/ChIJCTEpLmsNI9STEBM`;
     console.log("Places URL:", placesUrl);
-    const placesRes = await fetch(placesUrl);
+    const placesRes = await fetch(placesUrl, {
+      headers: {
+        "X-Goog-Api-Key": PLACES_KEY,
+        "X-Goog-FieldMask": "rating,userRatingCount",
+        "Content-Type": "application/json"
+      }
+    });
     const placesData = await placesRes.json();
     console.log("Places response:", JSON.stringify(placesData));
-    const rating       = placesData.result?.rating ?? null;
-    const totalReviews = placesData.result?.user_ratings_total ?? null;
+    const rating       = placesData.rating ?? null;
+    const totalReviews = placesData.userRatingCount ?? null;
 
-    // Fetch GHL workflow enrollment count
-    const workflowUrl = `https://services.leadconnectorhq.com/workflows/${WORKFLOW_ID}?locationId=${GHL_LOC}`;
-    console.log("Workflow URL:", workflowUrl);
-    const workflowRes = await fetch(workflowUrl, {
+    // Count contacts enrolled in review workflow via contacts search
+    const contactsUrl = `https://services.leadconnectorhq.com/contacts/?locationId=${GHL_LOC}&query=&workflowId=${WORKFLOW_ID}&limit=1`;
+    console.log("Contacts URL:", contactsUrl);
+    const contactsRes = await fetch(contactsUrl, {
       headers: { Authorization: `Bearer ${GHL_TOKEN}`, Version: "2021-07-28" }
     });
-    const workflowData = await workflowRes.json();
-    console.log("Workflow response:", JSON.stringify(workflowData));
-    const requestsSent = workflowData?.workflow?.contactsEnrolledCount ?? null;
+    const contactsData = await contactsRes.json();
+    console.log("Contacts response:", JSON.stringify(contactsData).slice(0, 300));
+    const requestsSent = contactsData?.meta?.total ?? null;
 
     // Calculate conversion rate
     const conversion = requestsSent && totalReviews
